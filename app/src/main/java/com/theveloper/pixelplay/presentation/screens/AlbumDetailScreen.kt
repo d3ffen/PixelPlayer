@@ -147,6 +147,8 @@ fun AlbumDetailScreen(
     var showMetadataSheet by remember { mutableStateOf(false) }
     var pendingEnrichmentAlbum by remember { mutableStateOf<Album?>(null) }
 
+    val metadataCoroutineScope = rememberCoroutineScope()
+
     val writeRequestLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -154,7 +156,7 @@ fun AlbumDetailScreen(
             pendingEnrichmentAlbum?.let { viewModel.applyEnrichment(it) }
             pendingEnrichmentAlbum = null
         } else {
-            coroutineScope.launch {
+            metadataCoroutineScope.launch {
                 snackbarHostState.showSnackbar("Write access denied — cannot modify audio files.")
             }
         }
