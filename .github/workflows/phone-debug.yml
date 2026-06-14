@@ -30,7 +30,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Build Phone debug APK (arm64-v8a only)
-        run: gradle :app:assembleArm64Debug
+        run: gradle :app:assembleDebug -Ppixelplay.enableAbiSplits=true
 
       - name: Verify arm64-v8a APK
         run: |
