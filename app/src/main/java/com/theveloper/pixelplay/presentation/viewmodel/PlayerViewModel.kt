@@ -5,6 +5,12 @@ import android.app.Activity
 import android.net.Uri
 import android.os.Trace
 import android.util.Log
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.core.Animatable
 import androidx.core.content.ContextCompat
@@ -218,7 +224,8 @@ class PlayerViewModel @Inject constructor(
     private val playbackDispatchStateHolder: PlaybackDispatchStateHolder,
     private val mediaControllerSyncStateHolder: MediaControllerSyncStateHolder,
     private val sessionToken: SessionToken,
-    private val mediaControllerFactory: com.theveloper.pixelplay.data.media.MediaControllerFactory
+    private val mediaControllerFactory: com.theveloper.pixelplay.data.media.MediaControllerFactory,
+    private val workManager: WorkManager
 ) : ViewModel() {
 
     private val _playerUiState = MutableStateFlow(PlayerUiState())
@@ -452,6 +459,17 @@ class PlayerViewModel @Inject constructor(
 
     private val _selectedSongForInfo = MutableStateFlow<Song?>(null)
     val selectedSongForInfo: StateFlow<Song?> = _selectedSongForInfo.asStateFlow()
+
+    // ── Album Art Fetch State ────────────────────────────────────────────────
+    private val _albumArtFetchState = MutableStateFlow<ArtFetchState>(ArtFetchState.Idle)
+    val albumArtFetchState: StateFlow<ArtFetchState> = _albumArtFetchState.asStateFlow()
+
+    sealed class ArtFetchState {
+        data object Idle : ArtFetchState()
+        data object Loading : ArtFetchState()
+        data object Success : ArtFetchState()
+        data class Error(val message: String) : ArtFetchState()
+    }
 
     // Theme & Colors - delegated to ThemeStateHolder
     val currentAlbumArtColorSchemePair: StateFlow<ColorSchemePair?> = themeStateHolder.currentAlbumArtColorSchemePair
@@ -928,6 +946,53 @@ class PlayerViewModel @Inject constructor(
     fun sendToast(message: String) {
         viewModelScope.launch {
             _toastEvents.emit(message)
+        }
+    }
+
+    /**
+     * Enqueues a [MetadataEmbedWorker] to download high-quality album art
+     * from fanart.tv (with CoverArtArchive fallback) and permanently embed
+     * it into every audio file of the album.
+     */
+    fun fetchAlbumArt(song: Song) {
+        if (song.albumId <= 0) {
+            _albumArtFetchState.value = ArtFetchState.Error("No album associated with this song")
+            return
+        }
+        _albumArtFetchState.value = ArtFetchState.Loading
+        val workRequest = OneTimeWorkRequestBuilder<com.theveloper.pixelplay.data.worker.MetadataEmbedWorker>()
+            .setInputData(workDataOf(
+                com.theveloper.pixelplay.data.worker.MetadataEmbedWorker.KEY_ALBUM_ID to song.albumId,
+                com.theveloper.pixelplay.data.worker.MetadataEmbedWorker.KEY_ALBUM_NAME to song.album,
+                com.theveloper.pixelplay.data.worker.MetadataEmbedWorker.KEY_ARTIST_NAME to (song.albumArtist ?: song.artist),
+                com.theveloper.pixelplay.data.worker.MetadataEmbedWorker.KEY_COVER_ONLY to true
+            ))
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+
+        workManager.enqueueUniqueWork(
+            "fetch_art_${song.albumId}",
+            ExistingWorkPolicy.KEEP,
+            workRequest
+        )
+
+        // Observe work status to update UI state
+        workManager.getWorkInfoByIdLiveData(workRequest.id).observeForever { workInfo ->
+            if (workInfo != null) {
+                when {
+                    workInfo.state.isFinished -> {
+                        if (workInfo.state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                            _albumArtFetchState.value = ArtFetchState.Success
+                        } else {
+                            _albumArtFetchState.value = ArtFetchState.Error(
+                                workInfo.outputData.getString(com.theveloper.pixelplay.data.worker.MetadataEmbedWorker.KEY_ERROR)
+                                    ?: "Unknown error"
+                            )
+                        }
+                    }
+                    else -> { /* still running */ }
+                }
+            }
         }
     }
 

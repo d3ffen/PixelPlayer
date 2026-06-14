@@ -29,17 +29,26 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LargeExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -90,6 +99,7 @@ import com.theveloper.pixelplay.presentation.components.CollapsibleCommonTopBar
 import com.theveloper.pixelplay.presentation.components.ExpressiveScrollBar
 import com.theveloper.pixelplay.ui.theme.LocalShowScrollbar
 import com.theveloper.pixelplay.presentation.components.MiniPlayerHeight
+import com.theveloper.pixelplay.presentation.components.MetadataInfoSheet
 import com.theveloper.pixelplay.presentation.components.PlaylistBottomSheet
 import com.theveloper.pixelplay.presentation.components.SmartImage
 import com.theveloper.pixelplay.presentation.components.SongInfoBottomSheet
@@ -97,10 +107,14 @@ import com.theveloper.pixelplay.presentation.components.resolveNavBarOccupiedHei
 import com.theveloper.pixelplay.presentation.components.subcomps.EnhancedSongListItem
 import com.theveloper.pixelplay.presentation.navigation.Screen
 import com.theveloper.pixelplay.presentation.viewmodel.AlbumDetailViewModel
+import com.theveloper.pixelplay.presentation.viewmodel.EnrichmentState
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.PlaylistViewModel
+import com.theveloper.pixelplay.presentation.viewmodel.WriteRequestSideEffect
 import com.theveloper.pixelplay.utils.formatSongCount
 import com.theveloper.pixelplay.utils.shapes.RoundedStarShape
+import android.content.IntentSender
+import androidx.activity.result.IntentSenderRequest
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import androidx.compose.ui.res.stringResource
@@ -124,6 +138,35 @@ fun AlbumDetailScreen(
 
     var showSongInfoBottomSheet by remember { mutableStateOf(false) }
     val selectedSongForInfo by playerViewModel.selectedSongForInfo.collectAsStateWithLifecycle()
+
+    // ── Metadata Enrichment (ⓘ) ──────────────────────────────────────────────
+    val enrichmentState by viewModel.enrichmentState.collectAsStateWithLifecycle()
+    val currentAlbumInfo by viewModel.currentAlbumInfo.collectAsStateWithLifecycle()
+    val writeRequestEffect by viewModel.writeRequestEffect.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var showMetadataSheet by remember { mutableStateOf(false) }
+    var pendingEnrichmentAlbum by remember { mutableStateOf<Album?>(null) }
+
+    val writeRequestLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            pendingEnrichmentAlbum?.let { viewModel.applyEnrichment(it) }
+            pendingEnrichmentAlbum = null
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Write access denied — cannot modify audio files.")
+            }
+        }
+    }
+
+    LaunchedEffect(writeRequestEffect) {
+        if (writeRequestEffect is WriteRequestSideEffect.RequestWriteAccess) {
+            val sender = (writeRequestEffect as WriteRequestSideEffect.RequestWriteAccess).intentSender
+            writeRequestLauncher.launch(IntentSenderRequest.Builder(sender).build())
+            viewModel.clearWriteRequestEffect()
+        }
+    }
     val systemNavBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomBarHeightDp = resolveNavBarOccupiedHeight(systemNavBarInset, navBarCompactMode)
     var showPlaylistBottomSheet by remember { mutableStateOf(false) }
@@ -374,6 +417,12 @@ fun AlbumDetailScreen(
                                     val randomSong = songs.random()
                                     playerViewModel.showAndPlaySong(randomSong, songs)
                                 }
+                            },
+                            onInfoClick = {
+                                pendingEnrichmentAlbum = album
+                                viewModel.loadCurrentMetadata(album)
+                                viewModel.fetchMetadataPreview(album)
+                                showMetadataSheet = true
                             }
                         )
                     } else {
@@ -394,6 +443,12 @@ fun AlbumDetailScreen(
                                     val randomSong = songs.random()
                                     playerViewModel.showAndPlaySong(randomSong, songs)
                                 }
+                            },
+                            onInfoClick = {
+                                pendingEnrichmentAlbum = album
+                                viewModel.loadCurrentMetadata(album)
+                                viewModel.fetchMetadataPreview(album)
+                                showMetadataSheet = true
                             }
                         )
                     }
@@ -497,6 +552,46 @@ fun AlbumDetailScreen(
                 }
             }
         }
+
+        // ── Metadata Enrichment Bottom Sheet (ⓘ) ──────────────────────────────
+        if (showMetadataSheet) {
+            ModalBottomSheet(
+                onDismissRequest = {
+                    showMetadataSheet = false
+                    viewModel.resetEnrichmentState()
+                },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ) {
+                MetadataInfoSheet(
+                    currentInfo = currentAlbumInfo,
+                    enrichmentState = enrichmentState,
+                    onApply = {
+                        val album = pendingEnrichmentAlbum ?: return@MetadataInfoSheet
+                        viewModel.requestWriteAccessThenApply(album)
+                    },
+                    onDismiss = {
+                        showMetadataSheet = false
+                        viewModel.resetEnrichmentState()
+                    }
+                )
+            }
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.padding(16.dp)
+        )
+    }
+
+    // ── Snackbar for enrichment complete ──────────────────────────────────────
+    LaunchedEffect(enrichmentState) {
+        if (enrichmentState is EnrichmentState.Done) {
+            snackbarHostState.showSnackbar("Metadata embedded successfully!")
+            viewModel.resetEnrichmentState()
+            showMetadataSheet = false
+        } else if (enrichmentState is EnrichmentState.Error && showMetadataSheet) {
+            // Only show snackbar for errors when sheet is open (avoid stale errors)
+        }
     }
 }
 
@@ -509,7 +604,8 @@ private fun SharedAlbumTopBarProbe(
     headerImageRequestSize: Size,
     onHeaderArtworkState: ((AsyncImagePainter.State) -> Unit)? = null,
     onBackPressed: () -> Unit,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    onInfoClick: (() -> Unit)? = null
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
     val statusBarColor =
@@ -602,6 +698,23 @@ private fun SharedAlbumTopBarProbe(
             syncStatusBarWithContainer = false
         )
 
+        // ⓘ Metadata enrichment button
+        if (onInfoClick != null && collapseFraction > 0.8f) {
+            IconButton(
+                onClick = onInfoClick,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 4.dp, end = 68.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Info,
+                    contentDescription = "Album metadata info",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
         LargeExtendedFloatingActionButton(
             onClick = onPlayClick,
             shape = RoundedStarShape(sides = 8, curve = 0.05, rotation = 0f),
@@ -630,7 +743,8 @@ private fun CollapsingAlbumTopBar(
     headerImageRequestSize: Size,
     onHeaderArtworkState: ((AsyncImagePainter.State) -> Unit)? = null,
     onBackPressed: () -> Unit,
-    onPlayClick: () -> Unit
+    onPlayClick: () -> Unit,
+    onInfoClick: (() -> Unit)? = null
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
     val statusBarColor =
@@ -733,6 +847,22 @@ private fun CollapsingAlbumTopBar(
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
                 ) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.common_back))
+                }
+
+                // ⓘ Metadata enrichment button
+                if (onInfoClick != null && collapseFraction > 0.8f) {
+                    FilledIconButton(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = 12.dp, top = 4.dp),
+                        onClick = onInfoClick,
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+                    ) {
+                        Icon(
+                            Icons.Outlined.Info,
+                            contentDescription = "Album metadata info"
+                        )
+                    }
                 }
 
                 Box(

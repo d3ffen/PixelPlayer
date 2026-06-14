@@ -36,6 +36,12 @@ import com.theveloper.pixelplay.data.media.SongMetadataEditor
 import com.theveloper.pixelplay.data.network.deezer.DeezerApiService
 import com.theveloper.pixelplay.data.network.netease.NeteaseApiService
 import com.theveloper.pixelplay.data.network.lyrics.LrcLibApiService
+import com.theveloper.pixelplay.data.network.fanart.FanartTvApiService
+import com.theveloper.pixelplay.data.network.musicbrainz.MusicBrainzApiService
+import com.theveloper.pixelplay.data.network.musicbrainz.MusicBrainzThrottleInterceptor
+import com.theveloper.pixelplay.data.network.coverartarchive.CoverArtArchiveApiService
+import com.theveloper.pixelplay.data.repository.AlbumArtRepository
+import com.theveloper.pixelplay.data.repository.MetadataEnrichmentRepository
 import com.theveloper.pixelplay.data.repository.ArtistImageRepository
 import com.theveloper.pixelplay.data.repository.LyricsRepository
 import com.theveloper.pixelplay.data.repository.LyricsRepositoryImpl
@@ -585,5 +591,85 @@ object AppModule {
         musicDao: MusicDao
     ): ArtistImageRepository {
         return ArtistImageRepository(deezerApiService, musicDao)
+    }
+
+    // ── Album Art & Metadata Enrichment ──────────────────────────────────────
+
+    @Provides
+    @Singleton
+    fun provideFanartTvApi(): FanartTvApiService {
+        return Retrofit.Builder()
+            .baseUrl("https://webservice.fanart.tv/v3/")
+            .client(OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS).build())
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(FanartTvApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @MusicBrainzOkHttp
+    fun provideMusicBrainzOkHttpClient(): OkHttpClient {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+            else HttpLoggingInterceptor.Level.NONE
+        }
+        return OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val original = chain.request()
+                val request = original.newBuilder()
+                    .header("User-Agent", "PixelPlayer/1.0 (Android; Music Player)")
+                    .build()
+                chain.proceed(request)
+            }
+            .addInterceptor(MusicBrainzThrottleInterceptor())
+            .addInterceptor(loggingInterceptor)
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideMusicBrainzApi(@MusicBrainzOkHttp mbOkHttpClient: OkHttpClient): MusicBrainzApiService {
+        return Retrofit.Builder()
+            .baseUrl("https://musicbrainz.org/ws/2/")
+            .client(mbOkHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(MusicBrainzApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideCoverArtArchiveApi(): CoverArtArchiveApiService {
+        return Retrofit.Builder()
+            .baseUrl("https://coverartarchive.org/")
+            .client(OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS).build())
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(CoverArtArchiveApiService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideAlbumArtRepository(
+        fanartTvApi: FanartTvApiService,
+        musicBrainzApi: MusicBrainzApiService,
+        coverArtArchiveApi: CoverArtArchiveApiService,
+        okHttpClient: OkHttpClient
+    ): AlbumArtRepository {
+        return AlbumArtRepository(fanartTvApi, musicBrainzApi, coverArtArchiveApi, okHttpClient)
+    }
+
+    @Provides
+    @Singleton
+    fun provideMetadataEnrichmentRepository(
+        musicBrainzApi: MusicBrainzApiService,
+        albumArtRepository: AlbumArtRepository
+    ): MetadataEnrichmentRepository {
+        return MetadataEnrichmentRepository(musicBrainzApi, albumArtRepository)
     }
 }

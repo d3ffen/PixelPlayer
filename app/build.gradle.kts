@@ -81,6 +81,9 @@ android {
             ?: "b18441a1ff607e10a989891a5462e627"
         buildConfigField("int", "TELEGRAM_API_ID", telegramApiId)
         buildConfigField("String", "TELEGRAM_API_HASH", "\"$telegramApiHash\"")
+        val fanartTvApiKey = localProperties.getProperty("FANART_TV_API_KEY")?.ifEmpty { null }
+            ?: "5eb4227eb79048a79c933964aba45063"
+        buildConfigField("String", "FANART_TV_API_KEY", "\"$fanartTvApiKey\"")
     }
 
     signingConfigs {

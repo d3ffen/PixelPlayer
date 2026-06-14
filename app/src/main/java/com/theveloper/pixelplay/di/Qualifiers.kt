@@ -29,3 +29,10 @@ annotation class BackupGson
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class AppScope
+
+/**
+ * Qualifier for MusicBrainz OkHttpClient (adds throttle interceptor + required User-Agent).
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class MusicBrainzOkHttp

@@ -42,6 +42,8 @@ data class Song(
     val qqMusicMid: String? = null, // QQ Music song MID
     val navidromeId: String? = null, // Navidrome song ID
     val jellyfinId: String? = null, // Jellyfin item ID
+    val hasEmbeddedArt: Boolean = false, // Whether the audio file has embedded cover art
+    val mediaStoreId: Long = 0, // MediaStore.Audio.Media._ID for scoped storage writes
 ) : Parcelable {
     /**
      * Returns the display string for artists.

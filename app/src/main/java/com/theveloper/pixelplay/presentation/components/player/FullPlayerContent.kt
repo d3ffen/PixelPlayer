@@ -867,6 +867,42 @@ fun FullPlayerContent(
                                 }
                             }
 
+                            // Fetch Album Art Button
+                            val artFetchState by playerViewModel.albumArtFetchState.collectAsStateWithLifecycle()
+                            val isFetchingArt = artFetchState is com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel.ArtFetchState.Loading
+
+                            Box(
+                                modifier = Modifier
+                                    .size(height = 42.dp, width = 50.dp)
+                                    .clip(
+                                        RoundedCornerShape(
+                                            topStart = 50.dp,
+                                            topEnd = 6.dp,
+                                            bottomStart = 50.dp,
+                                            bottomEnd = 6.dp
+                                        )
+                                    )
+                                    .background(playerOnAccentColor.copy(alpha = 0.7f))
+                                    .clickable(enabled = !isFetchingArt && currentSong != null) {
+                                        currentSong?.let { playerViewModel.fetchAlbumArt(it) }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isFetchingArt) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = playerAccentColor
+                                    )
+                                } else {
+                                    Icon(
+                                        painter = painterResource(R.drawable.rounded_imagesmode_24),
+                                        contentDescription = "Fetch Album Art",
+                                        tint = playerAccentColor
+                                    )
+                                }
+                            }
+
                             // Queue Button
                             Box(
                                 modifier = Modifier
