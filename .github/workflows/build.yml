@@ -37,6 +37,10 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Inject secrets into local.properties
+        run: |
+          echo "FANART_TV_API_KEY=${{ secrets.FANART_TV_API_KEY }}" > local.properties
+
       - name: Build release APK (arm64-v8a)
         run: ./gradlew assembleRelease
 
