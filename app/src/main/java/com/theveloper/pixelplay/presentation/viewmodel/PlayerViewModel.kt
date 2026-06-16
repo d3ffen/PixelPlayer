@@ -675,6 +675,7 @@ class PlayerViewModel @Inject constructor(
 
     fun resetAlbumArtFetchState() = albumMetadataEnrichmentStateHolder.resetArtFetchState()
 
+    private val _albumNavigationRequests = MutableSharedFlow<Long>(extraBufferCapacity = 1)
     val albumNavigationRequests = _albumNavigationRequests.asSharedFlow()
     private val _artistNavigationRequests = MutableSharedFlow<Long>(extraBufferCapacity = 1)
     val artistNavigationRequests = _artistNavigationRequests.asSharedFlow()
