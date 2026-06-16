@@ -1633,34 +1633,38 @@ private fun SongMetadataDisplaySection(
                 )
             }
 
-            // "Fetch Album Art" chip — downloads & permanently embeds cover art
+            // "Fetch Album Art" chip — opens multi-source art picker
             val artFetchState by playerViewModel.albumArtFetchState.collectAsStateWithLifecycle()
-            val isLoadingArt = artFetchState.isLoading
+            var showArtPicker by remember { mutableStateOf(false) }
+
             FilledIconButton(
                 modifier = Modifier.size(width = 48.dp, height = 48.dp),
-                enabled = !isLoadingArt,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = chipColor,
                     contentColor = chipContentColor
                 ),
-                onClick = {
-                    song?.let { playerViewModel.fetchAndEmbedAlbumArt(it) }
-                }
+                onClick = { showArtPicker = true }
             ) {
-                if (isLoadingArt) {
-                    LoadingIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = chipContentColor
-                    )
-                } else {
-                    Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Rounded.ImageSearch,
-                        contentDescription = "Fetch album art"
-                    )
-                }
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Rounded.ImageSearch,
+                    contentDescription = "Set album art"
+                )
             }
 
-            // Show toast when art fetch completes
+            if (showArtPicker && song != null) {
+                val queue by playerViewModel.queueFlow.collectAsStateWithLifecycle()
+                val albumSongs = remember(song.albumId, queue) {
+                    queue.filter { it.albumId == song.albumId }.ifEmpty { listOf(song) }
+                }
+                com.theveloper.pixelplay.presentation.screens.AlbumArtPickerSheet(
+                    songs = albumSongs,
+                    albumName = song.album,
+                    artistName = song.albumArtist ?: song.displayArtist,
+                    onDismiss = { showArtPicker = false }
+                )
+            }
+
+            // Show toast when art embed completes (from outside the picker, e.g. direct fetch)
             LaunchedEffect(artFetchState) {
                 when {
                     artFetchState.isSuccess -> {

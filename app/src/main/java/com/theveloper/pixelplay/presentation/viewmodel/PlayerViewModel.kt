@@ -662,8 +662,7 @@ class PlayerViewModel @Inject constructor(
     /** Fetches high-quality album art for the currently playing song and embeds it permanently. */
     fun fetchAndEmbedAlbumArt(song: com.theveloper.pixelplay.data.model.Song) {
         viewModelScope.launch {
-            // Get all songs in the current queue that share the same album
-            val albumSongs = _playerUiState.value.currentPlaybackQueue
+            val albumSongs = queueFlow.value
                 .filter { it.albumId == song.albumId }
                 .ifEmpty { listOf(song) }
             albumMetadataEnrichmentStateHolder.fetchAndEmbedAlbumArt(
@@ -676,7 +675,6 @@ class PlayerViewModel @Inject constructor(
 
     fun resetAlbumArtFetchState() = albumMetadataEnrichmentStateHolder.resetArtFetchState()
 
-    private val _albumNavigationRequests = MutableSharedFlow<Long>(extraBufferCapacity = 1)
     val albumNavigationRequests = _albumNavigationRequests.asSharedFlow()
     private val _artistNavigationRequests = MutableSharedFlow<Long>(extraBufferCapacity = 1)
     val artistNavigationRequests = _artistNavigationRequests.asSharedFlow()

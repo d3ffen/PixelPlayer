@@ -64,10 +64,7 @@ data class AlbumArtFetchState(
     val errorMessage: String? = null
 )
 
-/** Encapsulates a pending embed-art-only operation waiting for OS write permission. */
 private data class PendingArtEmbed(val songs: List<Song>, val bytes: ByteArray)
-
-/** Encapsulates a pending full-enrichment operation waiting for OS write permission. */
 private data class PendingEnrichApply(val songs: List<Song>, val enriched: EnrichedAlbumData)
 
 @Singleton
@@ -82,7 +79,6 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
     private val _albumArtFetchState = MutableStateFlow(AlbumArtFetchState())
     val albumArtFetchState: StateFlow<AlbumArtFetchState> = _albumArtFetchState.asStateFlow()
 
-    /** Emits an IntentSender when MediaStore write permission is needed (Android 11+). */
     private val _writePermissionRequest = MutableSharedFlow<IntentSender>(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -95,7 +91,7 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
     fun reset() { _enrichmentState.value = AlbumEnrichmentState.Idle }
     fun resetArtFetchState() { _albumArtFetchState.value = AlbumArtFetchState() }
 
-    // ── Step 1: Load current embedded info (no network) ───────────────────────
+    // ── Step 1: Load current info from local db/files immediately ─────────────
 
     suspend fun loadCurrentInfo(songs: List<Song>, album: Album) = withContext(Dispatchers.IO) {
         _enrichmentState.value = AlbumEnrichmentState.LoadingCurrentInfo
@@ -124,7 +120,7 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
         _enrichmentState.value = AlbumEnrichmentState.CurrentInfoReady(info)
     }
 
-    // ── Step 2: Fetch enriched data from MusicBrainz + fanart.tv ─────────────
+    // ── Step 2: Fetch from MusicBrainz / fanart.tv ────────────────────────────
 
     suspend fun fetchEnrichedData(songs: List<Song>, album: Album) = withContext(Dispatchers.IO) {
         val currentInfo = (_enrichmentState.value as? AlbumEnrichmentState.CurrentInfoReady)?.info
@@ -145,7 +141,7 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
         }
     }
 
-    // ── Step 3: Apply enrichment → songs ──────────────────────────────────────
+    // ── Step 3: Apply ─────────────────────────────────────────────────────────
 
     suspend fun applyEnrichment(songs: List<Song>) = withContext(Dispatchers.IO) {
         val state = _enrichmentState.value as? AlbumEnrichmentState.Preview ?: return@withContext
@@ -162,7 +158,7 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
         performApply(songs, state.enriched)
     }
 
-    // ── Album-art-only flow (Player screen button) ─────────────────────────────
+    // ── Album-art-only (Player screen button + art picker) ────────────────────
 
     suspend fun fetchAndEmbedAlbumArt(songs: List<Song>, albumName: String, artistName: String) =
         withContext(Dispatchers.IO) {
@@ -174,7 +170,38 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
                 )
                 return@withContext
             }
+            embedArtBytes(songs, bytes)
+        }
 
+    /** Called from the art picker when the user selects a specific image URL. */
+    suspend fun embedArtFromUrl(songs: List<Song>, imageUrl: String) = withContext(Dispatchers.IO) {
+        _albumArtFetchState.value = AlbumArtFetchState(isLoading = true)
+        val bytes = albumArtFetchRepository.downloadBytesPublic(imageUrl)
+        if (bytes == null || bytes.isEmpty()) {
+            _albumArtFetchState.value = AlbumArtFetchState(errorMessage = "Failed to download image.")
+            return@withContext
+        }
+        embedArtBytes(songs, bytes)
+    }
+
+    /** Called from the art picker when the user picks a local image URI. */
+    suspend fun embedArtFromLocalUri(songs: List<Song>, uri: Uri) = withContext(Dispatchers.IO) {
+        _albumArtFetchState.value = AlbumArtFetchState(isLoading = true)
+        val bytes = try {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Failed to read local image URI")
+            null
+        }
+        if (bytes == null || bytes.isEmpty()) {
+            _albumArtFetchState.value = AlbumArtFetchState(errorMessage = "Failed to read selected image.")
+            return@withContext
+        }
+        embedArtBytes(songs, bytes)
+    }
+
+    private suspend fun embedArtBytes(songs: List<Song>, bytes: ByteArray) =
+        withContext(Dispatchers.IO) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val intentSender = buildWriteRequestForSongs(songs)
                 if (intentSender != null) {
@@ -186,17 +213,20 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
             performEmbedArtOnly(songs, bytes)
         }
 
-    // ── Called by the screen after the OS permission dialog result ─────────────
+    // ── OS write-permission result ─────────────────────────────────────────────
 
     suspend fun onWritePermissionGranted(granted: Boolean) = withContext(Dispatchers.IO) {
-        // Art-only pending?
         pendingArtEmbed?.let { pending ->
             pendingArtEmbed = null
-            if (granted) performEmbedArtOnly(pending.songs, pending.bytes)
-            else _albumArtFetchState.value = AlbumArtFetchState(errorMessage = "Write permission denied.")
+            if (granted) {
+                performEmbedArtOnly(pending.songs, pending.bytes)
+            } else {
+                _albumArtFetchState.value = AlbumArtFetchState(
+                    errorMessage = "Write permission denied. Tap 'Allow' in the system dialog to modify audio files."
+                )
+            }
             return@withContext
         }
-        // Full-enrichment pending?
         pendingEnrichApply?.let { pending ->
             pendingEnrichApply = null
             if (granted) {
@@ -205,13 +235,14 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
                 val ci = (_enrichmentState.value as? AlbumEnrichmentState.Applying)?.currentInfo
                     ?: CurrentAlbumInfo("", "", null, 0, emptyList(), null, false)
                 _enrichmentState.value = AlbumEnrichmentState.FetchError(
-                    ci, "Write permission denied. Cannot modify audio files."
+                    ci,
+                    "Write permission denied. Tap 'Allow' in the system dialog to modify audio files."
                 )
             }
         }
     }
 
-    // ── Private apply helpers ─────────────────────────────────────────────────
+    // ── Private helpers ───────────────────────────────────────────────────────
 
     private suspend fun performApply(songs: List<Song>, enriched: EnrichedAlbumData) {
         try {
@@ -229,20 +260,20 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
                     CoverArtUpdate(bytes = it, mimeType = "image/jpeg")
                 }
 
-                val result = callEditor(
+                val result = songMetadataEditor.editSongMetadata(
                     songId = songId,
-                    title = mbTrack?.title ?: song.title,
-                    artist = mbTrack?.artist ?: song.displayArtist,
-                    album = enriched.title,
-                    albumArtist = enriched.artist,
-                    composer = "",
-                    genre = song.genre ?: "",
-                    lyrics = song.lyrics ?: "",
-                    trackNumber = mbTrack?.trackNumber ?: song.trackNumber,
-                    discNumber = song.discNumber,
+                    newTitle = mbTrack?.title ?: song.title,
+                    newArtist = mbTrack?.artist ?: song.displayArtist,
+                    newAlbum = enriched.title,
+                    newAlbumArtist = enriched.artist,
+                    newComposer = null,
+                    newGenre = song.genre ?: "",
+                    newLyrics = song.lyrics ?: "",
+                    newTrackNumber = mbTrack?.trackNumber ?: song.trackNumber,
+                    newDiscNumber = song.discNumber,
                     coverArtUpdate = coverUpdate
                 )
-                if (result) successCount++
+                if (result.success) successCount++
             }
 
             scanFiles(sorted)
@@ -265,22 +296,24 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
             var successCount = 0
             songs.forEach { song ->
                 val songId = song.id.toLongOrNull() ?: return@forEach
-                val existingMeta = runCatching { AudioMetadataReader.read(File(song.path)) }
-                    .getOrNull()
-                val result = callEditor(
+                val existingMeta = runCatching {
+                    AudioMetadataReader.read(File(song.path))
+                }.getOrNull()
+
+                val result = songMetadataEditor.editSongMetadata(
                     songId = songId,
-                    title = existingMeta?.title ?: song.title,
-                    artist = existingMeta?.artist ?: song.displayArtist,
-                    album = existingMeta?.album ?: song.album,
-                    albumArtist = existingMeta?.albumArtist ?: song.albumArtist ?: "",
-                    composer = existingMeta?.composer ?: "",
-                    genre = existingMeta?.genre ?: song.genre ?: "",
-                    lyrics = existingMeta?.lyrics ?: song.lyrics ?: "",
-                    trackNumber = existingMeta?.trackNumber ?: song.trackNumber,
-                    discNumber = existingMeta?.discNumber ?: song.discNumber,
+                    newTitle = existingMeta?.title ?: song.title,
+                    newArtist = existingMeta?.artist ?: song.displayArtist,
+                    newAlbum = existingMeta?.album ?: song.album,
+                    newAlbumArtist = existingMeta?.albumArtist ?: song.albumArtist ?: "",
+                    newComposer = existingMeta?.composer,
+                    newGenre = existingMeta?.genre ?: song.genre ?: "",
+                    newLyrics = existingMeta?.lyrics ?: song.lyrics ?: "",
+                    newTrackNumber = existingMeta?.trackNumber ?: song.trackNumber,
+                    newDiscNumber = existingMeta?.discNumber ?: song.discNumber,
                     coverArtUpdate = CoverArtUpdate(bytes = bytes, mimeType = "image/jpeg")
                 )
-                if (result) successCount++
+                if (result.success) successCount++
             }
 
             scanFiles(songs)
@@ -288,59 +321,16 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
             _albumArtFetchState.value = if (successCount > 0) {
                 AlbumArtFetchState(isSuccess = true)
             } else {
-                AlbumArtFetchState(errorMessage = "Could not embed art into any files.")
+                AlbumArtFetchState(
+                    errorMessage = "Could not embed art into any files. " +
+                        "Some songs may be on read-only storage."
+                )
             }
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Error embedding art only")
-            _albumArtFetchState.value = AlbumArtFetchState(errorMessage = "Error: ${e.localizedMessage}")
-        }
-    }
-
-    /** Delegates to SongMetadataEditor, handling the @RequiresApi(R) gating. */
-    private suspend fun callEditor(
-        songId: Long,
-        title: String,
-        artist: String,
-        album: String,
-        albumArtist: String,
-        composer: String,
-        genre: String,
-        lyrics: String,
-        trackNumber: Int,
-        discNumber: Int?,
-        coverArtUpdate: CoverArtUpdate?
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val result = songMetadataEditor.editSongMetadata(
-                songId = songId,
-                newTitle = title,
-                newArtist = artist,
-                newAlbum = album,
-                newAlbumArtist = albumArtist,
-                newComposer = composer,
-                newGenre = genre,
-                newLyrics = lyrics,
-                newTrackNumber = trackNumber,
-                newDiscNumber = discNumber,
-                coverArtUpdate = coverArtUpdate
+            Timber.tag(TAG).e(e, "Error embedding art")
+            _albumArtFetchState.value = AlbumArtFetchState(
+                errorMessage = "Error: ${e.localizedMessage}"
             )
-            result.success
-        } else {
-            // Pre-Android-11: direct file-path write (WRITE_EXTERNAL_STORAGE granted at install)
-            val result = songMetadataEditor.editSongMetadata(
-                songId = songId,
-                newTitle = title,
-                newArtist = artist,
-                newAlbum = album,
-                newAlbumArtist = albumArtist,
-                newComposer = composer,
-                newGenre = genre,
-                newLyrics = lyrics,
-                newTrackNumber = trackNumber,
-                newDiscNumber = discNumber,
-                coverArtUpdate = coverArtUpdate
-            )
-            result.success
         }
     }
 
@@ -351,15 +341,21 @@ class AlbumMetadataEnrichmentStateHolder @Inject constructor(
         }
     }
 
+    /**
+     * Builds a write-permission IntentSender for ALL songs in the batch.
+     * Uses [MediaStorePermissionHelper.getMediaStoreUri(context, id)] which correctly
+     * resolves the volume name for each song — fixing "permission denied" on secondary volumes.
+     * Returns null if no permission is needed (pre-Android-11 or all URIs invalid).
+     */
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
     private fun buildWriteRequestForSongs(songs: List<Song>): IntentSender? {
         val uris = songs.mapNotNull { song ->
-            song.id.toLongOrNull()?.let { id ->
+            song.id.toLongOrNull()?.takeIf { it > 0 }?.let { id ->
+                // Use the context-aware overload that queries the actual volume name
                 MediaStorePermissionHelper.getMediaStoreUri(context, id)
             }
         }
-        return if (uris.isNotEmpty()) {
-            MediaStorePermissionHelper.createWriteRequestIntentSender(context, uris)
-        } else null
+        if (uris.isEmpty()) return null
+        return MediaStorePermissionHelper.createWriteRequestIntentSender(context, uris)
     }
 }

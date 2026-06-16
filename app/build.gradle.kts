@@ -149,7 +149,7 @@ android {
             isEnable = enableAbiSplits
             reset()
             if (enableAbiSplits) {
-                include("arm64-v8a")
+                include("arm64-v8a", "armeabi-v7a")
                 isUniversalApk = false
             }
         }

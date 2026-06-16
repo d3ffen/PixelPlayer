@@ -156,6 +156,11 @@ class AlbumArtFetchRepository @Inject constructor(
         }
     }
 
+    /** Public accessor for the art picker to download any arbitrary image URL. */
+    suspend fun downloadBytesPublic(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        downloadBytes(url)
+    }
+
     private fun downloadBytes(url: String): ByteArray? = try {
         val request = Request.Builder().url(url).build()
         okHttpClient.newCall(request).execute().use { response ->
